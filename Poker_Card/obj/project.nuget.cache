@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "e/steNrgF2Q=",
+  "success": true,
+  "projectFilePath": "c:\\Users\\a0919\\OneDrive\\桌面\\Big2Game-main\\Poker_Card\\Poker_Card.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\a0919\\.nuget\\packages\\raylib-cs\\7.0.2\\raylib-cs.7.0.2.nupkg.sha512"
+  ],
+  "logs": []
+}
