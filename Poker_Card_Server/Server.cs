@@ -10,6 +10,8 @@ using System.Collections;
 using Microsoft.VisualBasic;
 
 namespace Big2Server{
+
+    // 封包
     public enum PacketType { CreateRoom, UpdateRooms, LeaveRoom, JoinRoom, StartGame, GameSync, PlayCard }
     public class Packet { 
         public PacketType Type { get; set; } 
@@ -24,6 +26,7 @@ namespace Big2Server{
         public GameData? Game { get; set; }
     }
 
+    // 卡牌
     public enum Suit { Club, Diamond, Heart, Spade } // ♣, ♦, ♥, ♠
     public class Card{
         public int Rank { get; set; }
@@ -31,11 +34,16 @@ namespace Big2Server{
     }
     public class GameData{
         public List<List<Card>> PlayerHands { get; set; } = new(); // 4個人的手牌
-        public List<int> LastPlay { get; set; } = new(); // 桌面上最後出的牌
+        public List<Card> LastPlay { get; set; } = new(); // 桌面上最後出的牌
         public int CurrentTurn { get; set; } = 0; // 輪到誰 (0-3)
         public string LastPlayerName { get; set; } = ""; // 最後出牌的人
+        public int PassCount { get; set; } = 0;
+
+        public bool IsGameOver { get; set; } = false;
+        public string WinnerName { get; set; } = "";
     }
     
+    // 主程式
     class Program{
         static readonly List<TcpClient> Clients = new();
         static readonly List<RoomState> Rooms = new();
@@ -123,17 +131,10 @@ namespace Big2Server{
                             // 每個玩家給13張牌
                             for(int i = 0; i < 4; i++){
                                 GameState.PlayerHands.Add(
-                                    deck.Skip(i*13).Take(13).ToList()
+                                    SortHand(deck.Skip(i*13).Take(13).ToList())
                                 );
                             }
-                            for(int i = 0; i < 4; i++){
-                                for(int j = 0; j < 13; j++)
-                                {
-                                  Console.Write(GameState.PlayerHands[i][j].Rank + GameState.PlayerHands[i][j].Suit);  
-                                }
-                                Console.WriteLine();
-                            }
-
+                            
                             // 梅花 3 開始
                             for(int i=0; i<4; i++){
                                 if(GameState.PlayerHands[i].Any(
@@ -157,12 +158,58 @@ namespace Big2Server{
                             break;
                     
                         case PacketType.PlayCard:
-                            var data = JsonSerializer.Deserialize<GameData>(packet.Data!)!;
-                            var rooms = Rooms.Find(r => r.PlayerNames.Contains(myName!));
-                            if(rooms != null){
-                                rooms.Game = data;
-                                await BroadcastRooms();
+                            
+                            // 遊戲狀態
+                            var gameData = JsonSerializer.Deserialize<GameData>(packet.Data!)!;
+                            if (gameData == null) break;
+
+                            // 找玩家所在房間
+                            var targetRoom = Rooms.Find(r => r.PlayerNames.Contains(myName!));
+                            if (targetRoom == null || targetRoom.Game == null) break;
+
+                            var game = targetRoom.Game;
+                            int playerIndex = targetRoom.PlayerNames.IndexOf(myName!);
+
+                            if(gameData.LastPlay.Count == 0){ // 玩家 PASS
+                                Console.WriteLine($"{gameData.LastPlayerName} 選擇 PASS");
+                                game.PassCount++;
+                                if(game.PassCount == 3){
+                                    Console.WriteLine("三人 PASS，清桌");
+                                    game.LastPlay.Clear();
+                                    game.PassCount = 0;
+
+                                    int lastIndex = targetRoom.PlayerNames.IndexOf(game.LastPlayerName);
+                                    game.CurrentTurn = lastIndex;
+                                }
+                                else{
+                                    game.CurrentTurn = (game.CurrentTurn + 1) % 4;
+                                }
                             }
+                            else{ // 玩家出牌
+                                Console.WriteLine($"{gameData.LastPlayerName} 出牌 {string.Join(",", gameData.LastPlay.Select(c => c.Rank + c.Suit.ToString()))}");
+
+                                // 從玩家手牌移除已出的牌
+                                foreach(var c in gameData.LastPlay){
+                                    game.PlayerHands[playerIndex].RemoveAll(card => card.Rank == c.Rank && card.Suit == c.Suit);
+                                }
+
+                                game.PlayerHands[playerIndex] = SortHand(game.PlayerHands[playerIndex]);
+
+                                // 更新桌上最後出牌
+                                game.LastPlay = gameData.LastPlay;
+                                game.LastPlayerName = myName!;
+                                game.PassCount = 0;
+                                game.CurrentTurn = (game.CurrentTurn + 1) % 4;
+                            }
+                            if(game.PlayerHands[playerIndex].Count == 0){
+                                Console.WriteLine($"{myName} 出完牌，遊戲結束");
+
+                                game.IsGameOver = true;
+                                game.WinnerName = myName!;
+                                game.CurrentTurn = -1;     // 停止所有操作
+                                game.LastPlay.Clear();     // 清桌
+                            }
+                            await BroadcastGame(targetRoom);
                             break;
                     }
                 }
@@ -211,12 +258,26 @@ namespace Big2Server{
                 .Select(c => c.GetStream().WriteAsync(data).AsTask());
             await Task.WhenAll(tasks);
         }
+        static async Task BroadcastGame(RoomState room){
+            if(room.Game == null) return;
+
+            var packet = new Packet{
+                Type = PacketType.GameSync,
+                Data = JsonSerializer.Serialize(room.Game)
+            };
+            byte[] data = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(packet));
+
+            // 廣播給房間內玩家
+            var tasks = Clients
+                        .Where(c => c.Connected)
+                        .Select(c => c.GetStream().WriteAsync(data).AsTask());
+            await Task.WhenAll(tasks);
+        }
         public class JoinRequest{
             public string? RoomName { get; set; }
             public string? PlayerName { get; set; }
         }
 
-        
         // 創卡牌
         static List<Card> CreateDeck(){
             var deck = new List<Card>();
@@ -228,5 +289,41 @@ namespace Big2Server{
             return deck.OrderBy(_ => Guid.NewGuid()).ToList();
         }
 
+        // 排序卡牌
+        static List<Card> SortHand(List<Card> hand){
+            return hand
+                .OrderBy(c => Big2RankValue(c.Rank))
+                .ThenBy(c => Big2SuitValue(c.Suit))
+                .ToList();
+        }
+        static int Big2RankValue(int rank){
+            return rank 
+            switch{
+                3  => 1,
+                4  => 2,
+                5  => 3,
+                6  => 4,
+                7  => 5,
+                8  => 6,
+                9  => 7,
+                10 => 8,
+                11 => 9,   // J
+                12 => 10,  // Q
+                13 => 11,  // K
+                14 => 12,  // A
+                15 => 13,  // 2
+                _  => 99
+            };
+        }
+        static int Big2SuitValue(Suit suit){
+            return suit
+            switch{
+                Suit.Club    => 1,
+                Suit.Diamond => 2,
+                Suit.Heart   => 3,
+                Suit.Spade   => 4,
+                _ => 99
+            };
+        }
     }
 }

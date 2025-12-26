@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Net.Sockets;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using System.Reflection.Metadata;
 
 namespace Big2Game{
     
@@ -22,6 +23,8 @@ namespace Big2Game{
         public List<string> PlayerNames { get; set; } = new(); //玩家清單
         public int PlayerCount => PlayerNames.Count; //玩家人數
         public bool IsGameStarted { get; set; } //開始了嗎
+        public GameData? Game { get; set; }
+
         public RoomState(string RoomName, string OwnerName, List<string> PlayerNames, bool IsGameStarted){
             this.RoomName = RoomName;
             this.OwnerName = OwnerName;
@@ -96,6 +99,19 @@ namespace Big2Game{
                 case PacketType.StartGame: // 開始遊戲
                     //CurrentScene = 3;
                     break;
+                
+                case PacketType.GameSync: // 遊戲狀態更新
+                    var gameData = JsonSerializer.Deserialize<GameData>(packet.Data!);
+                    if (gameData == null) break;
+
+                    // 找玩家所在房間
+                    var room = Rooms.FirstOrDefault(r => r.PlayerNames.Contains(gameData.LastPlayerName));
+                    if (room != null)
+                    {
+                        room.Game = gameData; // 更新遊戲狀態
+                    }
+                    break;
+                
             }
         }
         public void SendPacket(PacketType type, object payload){
@@ -112,22 +128,49 @@ namespace Big2Game{
     
     // 牌
     public enum Suit { Club, Diamond, Heart, Spade } // ♣, ♦, ♥, ♠
+    enum HandType{
+    Invalid,
+    Single,
+    Pair,
+    Triple,
+    Straight,
+    FullHouse,
+    FourKind
+}
+
     public class Card{
         public int Rank { get; set; }
         public Suit Suit { get; set; }
+    }
+    public class GameData{
+        public List<List<Card>> PlayerHands { get; set; } = new(); // 4個人的手牌
+        public List<Card> LastPlay { get; set; } = new(); // 桌面上最後出的牌
+        public int CurrentTurn { get; set; } = 0; // 輪到誰 (0-3)
+        public string LastPlayerName { get; set; } = ""; // 最後出牌的人
+        public int PassCount { get; set; } = 0;
+
+        public bool IsGameOver { get; set; } = false;
+        public string WinnerName { get; set; } = "";
     }
 
     public class Program{
         // 字體
         static Font font;
+        static Font font2;
         // 計時器
         static float Timer = 0.0f;
         static float TimerInterval = 0.0f;
+        // 選取的牌
+        static List<Card> SelectedCards = new();
         static void Main(string[] args){
             // 視窗
             Raylib.InitWindow(960, 540, "大老二");
             Raylib.SetTargetFPS(60);
 
+            // 圖片
+            Image icon = Raylib.LoadImage(@".\images\Icon.png");
+            Raylib.SetWindowIcon(icon);
+            
             // 視窗位置 (bat用)
             if(args.Length >= 2 && int.TryParse(args[0], out int x) && int.TryParse(args[1], out int y)){
                 Raylib.SetWindowPosition(x, y);
@@ -140,11 +183,13 @@ namespace Big2Game{
             });
 
             // 字體
-            string En = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=[]{}|;':\",./<>? ";
+            string En = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=[]{}|;':\",./<>?♣♦♥♠ ";
             string Ch = "大老二玩家創建立遊戲房間名稱列表重新整理加入等待中央出牌區遊戲中主滿人即可離開始現在輪到你出牌";
             List<int> TextList = (En + Ch).Select(c => (int)c).Distinct().ToList();
-            font = Raylib.LoadFontEx(@".\fonts\Cubic11.ttf", 48, TextList.ToArray(), TextList.Count);
+            font = Raylib.LoadFontEx (@".\fonts\Cubic11.ttf", 48, TextList.ToArray(), TextList.Count);
+            font2 = Raylib.LoadFontEx(@"C:\Windows\Fonts\seguisym.ttf", 48, TextList.ToArray(), TextList.Count);
             Raylib.SetTextureFilter(font.Texture, TextureFilter.Bilinear);
+            Raylib.SetTextureFilter(font2.Texture, TextureFilter.Bilinear);
 
             // 圖片
             Texture2D LobbyBG = Raylib.LoadTexture(@".\images\LobbyBG.jpg");
@@ -446,26 +491,56 @@ namespace Big2Game{
                 }
                 else if(CurrentScene == 3){ // (3)遊戲聽
                     var Room = Rooms.FirstOrDefault(r => r.PlayerNames.Contains(PlayerName));
-                    
-                    // 找不到房間
-                    if(Room == null){ 
+                    if(Room == null || Room?.Game == null){ // 找不到房間
                         CurrentScene = 1; 
                         continue; 
                     }
+                    
+                    var Game = Room.Game;
+                    if(Game.IsGameOver){ // 遊戲結束
+                        Raylib.DrawRectangle(0, 0, 960, 540, new Color(0, 0, 0, 180));
+                        Raylib.DrawTextEx(
+                            font,
+                            $"遊戲結束！\n勝利者：{Game.WinnerName}",
+                            new Vector2(300, 220),
+                            36,
+                            2,
+                            Color.Gold
+                        );
 
-                    // 玩家索引
-                    int PlayerIndex = Room.PlayerNames.IndexOf(PlayerName);
+                        Raylib.DrawTextEx(
+                            font,
+                            "點擊滑鼠返回大廳",
+                            new Vector2(360, 300),
+                            22,
+                            2,
+                            Color.White
+                        );
 
-                    // 背景
-                    Raylib.DrawRectangle(0, 0, 960, 540, new(0, 80, 0, 255));
-                    Raylib.DrawRectangleLinesEx(new(10, 10, 940, 520), 5, Color.DarkGreen);
+                        if(Raylib.IsMouseButtonPressed(MouseButton.Left)){
+                            CurrentScene = 1;
+                        }
 
+                        Raylib.EndDrawing();
+                        continue;
+                    }
+                    // 玩家資料
+                    int MyIndex = Room.PlayerNames.IndexOf(PlayerName);
+                    var MyHand = Game.PlayerHands[MyIndex];
+                    
+                    // 畫背景
+                    Raylib.DrawRectangle(0, 0, 960, 540, new Color(0, 80, 0, 255));
+                    if(Game.CurrentTurn == MyIndex)
+                        Raylib.DrawRectangleLinesEx(new(10, 10, 940, 520), 5, new Color(255, 230, 110, 255));
+                    else
+                        Raylib.DrawRectangleLinesEx(new(10, 10, 940, 520), 5, Color.DarkGreen);
+
+                    // 畫資訊
                     for(int i = 0; i < 4; i++){
-                        // 跳過自己
-                        if(i == PlayerIndex) continue; 
+                        if(i == MyIndex) continue; // 跳過自己
 
                         // 玩家位置
-                        Vector2 PlayerPos = ((i - PlayerIndex + 4) % 4) 
+                        Vector2 PlayerPos = ((i - MyIndex + 4) % 4) 
                         switch{
                             1 => new Vector2(800, 200), // 右
                             2 => new Vector2(420, 50),  // 上
@@ -476,36 +551,60 @@ namespace Big2Game{
                         // 對手資訊
                         Raylib.DrawRectangleV(PlayerPos, new(120, 80), new(0, 0, 0, 100));
                         Raylib.DrawTextEx(font, Room.PlayerNames[i], PlayerPos + new Vector2(10, 10), 20, 1, Color.White);
-                        Raylib.DrawTextEx(font, "Cards: 13", PlayerPos + new Vector2(10, 40), 18, 1, Color.Yellow);
+                        Raylib.DrawTextEx(font, $"Cards: {Game.PlayerHands[i].Count}", PlayerPos + new Vector2(10, 40), 18, 1, Color.Yellow);
                     }
 
                     // 中央出牌區
                     Rectangle tableArea = new(300, 180, 360, 180);
                     Raylib.DrawRectangleRec(tableArea, new(0, 60, 0, 150));
-                    Raylib.DrawTextEx(font, "中央出牌區", new(420, 250), 24, 2, new(255, 255, 255, 50));
-                    
-                    // 這裡應畫出最後一手的牌 (LastPlay)
-                    // DrawCards(lastPlayCards, 400, 210); 
+                    Raylib.DrawTextEx(font, "中央出牌區", new(420, 250), 24, 2, new Color(255, 255, 255, 50));
+                    if(Game.LastPlay.Count > 0){
+                        float startX = 330;
+                        float Y = 210;
+
+                        for(int i = 0; i < Game.LastPlay.Count; i++){
+                            DrawCard(Game.LastPlay[i], startX + i * 50, Y);
+                        }
+
+                        Raylib.DrawTextEx(
+                            font,
+                            $"{Game.LastPlayerName} 出牌",
+                            new(360, 190),
+                            18,
+                            1,
+                            Color.Yellow
+                        );
+                    }
 
                     // 手牌區域
-                    Raylib.DrawRectangle(150, 400, 660, 120, new(0, 0, 0, 50));
+                    Raylib.DrawRectangle(150, 400, 660, 120, new Color(0, 0, 0, 50));
                     
-                    // 模擬手牌 (建議另外寫一個 DrawCard 函式處理花色與點數)
-                    for(int i = 0; i < 13; i++){
+                    // 手牌
+                    for(int i = 0; i < MyHand.Count; i++){
                         float cardX = 180 + i*45; // 疊牌效果
                         float cardY = 420;
                         
-                        // 牌往上提
-                        if(Raylib.CheckCollisionPointRec(MousePos, new(cardX, cardY, 60, 90))){
-                            cardY -= 20;
-                            if(IsClick){ 
-                                /* 選取牌的邏輯 */
+                        bool hoverCard = Raylib.CheckCollisionPointRec(MousePos, new(cardX, cardY, 60, 90));
+                        bool selected = SelectedCards.Any(c =>
+                            c.Rank == MyHand[i].Rank &&
+                            c.Suit == MyHand[i].Suit
+                        );
+
+                        if(selected)  cardY -= 20;
+
+                        if(Game.CurrentTurn == MyIndex){
+                            if(hoverCard && IsClick){
+                                if(selected) SelectedCards.Remove(MyHand[i]); // 取消選
+                                else         SelectedCards.Add(MyHand[i]);    // 選中  
                             }
                         }
+                        else{
+                            if(hoverCard) cardY -= 20; // 牌往上提
+                        }
+                        
 
-                        Raylib.DrawRectangle((int)cardX, (int)cardY, 60, 90, Color.RayWhite);
-                        Raylib.DrawRectangleLines((int)cardX, (int)cardY, 60, 90, Color.Black);
-                        Raylib.DrawText("?", (int)cardX + 20, (int)cardY + 30, 30, Color.Black);
+                        // 畫牌
+                        DrawCard(MyHand[i], cardX, cardY);
                     }
 
                     // 出牌 + Pass
@@ -515,19 +614,92 @@ namespace Big2Game{
                     bool hoverPlay = Raylib.CheckCollisionPointRec(MousePos, PlayButton);
                     bool hoverPass = Raylib.CheckCollisionPointRec(MousePos, PassButton);
 
-                    Raylib.DrawRectangleRec(PlayButton, hoverPlay ? Color.Lime : Color.Green);
+                    Color colorPlay;
+                    Color colorPass;
+                    if(Game.CurrentTurn == MyIndex){
+                        // 顏色
+                        colorPlay = hoverPlay ? Color.Lime : Color.Green;
+                        colorPass = hoverPass ? Color.Orange : Color.Red;
+                        // 換誰出牌
+                        Raylib.DrawTextEx(font, "現在輪到你出牌...", new(200, 370), 22, 2, Color.Yellow);
+                    }
+                    else{
+                        colorPlay = Color.Gray; colorPass = Color.Gray;
+                    }
+
+                    // 出牌
+                    Raylib.DrawRectangleRec(PlayButton, colorPlay);
                     Raylib.DrawTextEx(font, "出牌", new(PlayButton.X + 28, PlayButton.Y + 10), 20, 2, Color.White);
+                    if(hoverPlay && IsClick && Game.CurrentTurn == MyIndex){
+                        var selected = GetSelectedCards();
+                        var type = GetHandType(selected);
+                        
+                        // 合法?
+                        if(!CanPlay(Game.LastPlay, selected)){
+                            Console.WriteLine("牌型不合法");
+                        }
+                        else{
+                            Console.WriteLine("出牌成功");
+                            // 桌上牌
+                            //Game.LastPlay = selected.ToList();
+                            //Game.LastPlayerName = PlayerName;
 
-                    Raylib.DrawRectangleRec(PassButton, hoverPass ? Color.Orange : Color.Red);
+                            // 送到 Server
+                            client.SendPacket(
+                                PacketType.PlayCard,
+                                new GameData{
+                                    PlayerHands = Game.PlayerHands,
+                                    LastPlay = selected.ToList(),
+                                    CurrentTurn = (Game.CurrentTurn + 1) % 4,
+                                    LastPlayerName = PlayerName
+                                }
+                            );
+
+                            // 從手牌移除
+                            /*
+                            foreach(var c in selected){
+                                MyHand.Remove(c);
+                            }*/
+
+                            // 換人
+                            Game.CurrentTurn = (Game.CurrentTurn + 1) % 4;
+                            SelectedCards.Clear();
+
+                            if(MyHand.Count == 0){
+                                Console.WriteLine($"{PlayerName} 出完牌，遊戲結束！");
+                                // 可呼叫 EndGame() 或其他結束邏輯
+                            }
+
+                        } 
+                    }
+
+                    Raylib.DrawRectangleRec(PassButton, colorPass);
                     Raylib.DrawTextEx(font, "PASS", new(PassButton.X + 25, PassButton.Y + 10), 20, 2, Color.White);
+                    if(hoverPass && IsClick && Game.CurrentTurn == MyIndex){
+                        Console.WriteLine("玩家選擇 PASS");
 
-                    // 換誰出牌
-                    Raylib.DrawTextEx(font, "現在輪到你出牌...", new(200, 370), 22, 2, Color.Yellow);
+                        // 送封包給 server，通知本輪玩家 PASS
+                        client.SendPacket(
+                            PacketType.PlayCard,
+                            new GameData{
+                                PlayerHands = Game.PlayerHands,   // 玩家手牌不變
+                                LastPlay = new List<Card>(),       // 沒有出牌
+                                CurrentTurn = (Game.CurrentTurn + 1) % 4,
+                                LastPlayerName = PlayerName
+                            }
+                        );
+
+                        // 換下一個玩家 (client 先暫時更新 UI)
+                        Game.CurrentTurn = (Game.CurrentTurn + 1) % 4;
+
+                        SelectedCards.Clear();
+                    }
                 }
                 Raylib.EndDrawing();
-            }
 
+            }
             Raylib.UnloadTexture(LobbyBG);
+            Raylib.UnloadImage(icon);
             Raylib.UnloadFont(font);
             Raylib.CloseWindow();
         }
@@ -600,12 +772,175 @@ namespace Big2Game{
             }
         }
 
-        // 比較牌
-        public static int Compare(Card a, Card b){
-            if(a.Rank != b.Rank)
-                return a.Rank.CompareTo(b.Rank);
-            return a.Suit.CompareTo(b.Suit);
+        // 畫牌
+        static void DrawCard(Card card, float x, float y){
+            Rectangle rec = new(x, y, 60, 90);
+
+            Raylib.DrawRectangleRec(rec, Color.White);
+            Raylib.DrawRectangleLinesEx(rec, 2, Color.Black);
+
+            string rank = card.Rank
+            switch{
+                11 => "J",
+                12 => "Q",
+                13 => "K",
+                14 => "A",
+                15 => "2",
+                _  => card.Rank.ToString()
+            };
+
+            string suit = card.Suit
+            switch{
+                Suit.Club    => "♣",
+                Suit.Diamond => "♦",
+                Suit.Heart   => "♥",
+                Suit.Spade   => "♠",
+                _ => ""
+            };
+
+            Color suitColor = (card.Suit == Suit.Heart || card.Suit == Suit.Diamond) ? Color.Red : Color.Black;
+            Raylib.DrawTextEx(font2, rank, new(x + 6, y + 4), 20, 1, suitColor);
+            Raylib.DrawTextEx(font2, suit, new(x + 6, y + 20), 24, 1, suitColor);
         }
 
+        // 排序卡牌
+        static int Big2RankValue(int rank){
+            return rank switch{
+                3  => 1,
+                4  => 2,
+                5  => 3,
+                6  => 4,
+                7  => 5,
+                8  => 6,
+                9  => 7,
+                10 => 8,
+                11 => 9,  // J
+                12 => 10, // Q
+                13 => 11, // K
+                14 => 12, // A
+                15 => 13, // 2
+                _  => 0
+            };
+        }
+        static int Big2SuitValue(Suit suit){
+            // 花色大小：♣ < ♦ < ♥ < ♠
+            return suit switch{
+                Suit.Club    => 1,
+                Suit.Diamond => 2,
+                Suit.Heart   => 3,
+                Suit.Spade   => 4,
+                _ => 0
+            };
+        }
+        
+        // 選取的牌
+        static List<Card> GetSelectedCards(){
+            return SelectedCards.ToList();
+        }
+        static HandType GetHandType(List<Card> cards){
+            if(cards.Count == 0) return HandType.Invalid;
+
+            var ranks = cards.Select(c => c.Rank).OrderBy(r => r).ToList();
+            var groups = ranks.GroupBy(r => r).Select(g => g.Count()).OrderBy(c => c).ToList();
+
+            // 單張
+            if(cards.Count == 1) 
+                return HandType.Single;
+
+            // 對子
+            if(cards.Count == 2 && groups.SequenceEqual([2]))
+                return HandType.Pair;
+
+            // 三條
+            if(cards.Count == 3 && groups.SequenceEqual([3]))
+                return HandType.Triple;
+
+            // 五張牌
+            if(cards.Count == 5){
+                bool isStraight = ranks.Distinct().Count() == 5 && ranks.Max() - ranks.Min() == 4;
+                bool isFourKind = groups.SequenceEqual([1,4]);
+                bool isFullHouse = groups.SequenceEqual([2,3]);
+
+                if(isStraight) return HandType.Straight;
+                if(isFullHouse) return HandType.FullHouse;
+                if(isFourKind) return HandType.FourKind;
+            }
+
+            return HandType.Invalid;
+        }
+        static bool CanPlay(List<Card> lastPlay, List<Card> currentPlay){
+            var currentType = GetHandType(currentPlay);
+            if (currentType == HandType.Invalid)
+                return false;
+
+            // 桌上沒牌，直接可出
+            if (lastPlay == null || lastPlay.Count == 0)
+                return true;
+
+            var lastType = GetHandType(lastPlay);
+
+            // 牌型 & 張數必須相同
+            if (currentType != lastType)
+                return false;
+
+            if (currentPlay.Count != lastPlay.Count)
+                return false;
+
+            // 比大小
+            return CompareSameType(lastType, lastPlay, currentPlay);
+        }
+        static bool CompareSameType(
+            HandType type,
+            List<Card> last,
+            List<Card> current
+        ){
+            switch(type){
+                case HandType.Single:
+                case HandType.Pair:
+                case HandType.Triple:
+                case HandType.Straight:
+                    return CompareHighest(current, last);
+
+                case HandType.FullHouse:
+                    return GetTripleRank(current) > GetTripleRank(last);
+
+                case HandType.FourKind:
+                    return GetFourRank(current) > GetFourRank(last);
+
+                default:
+                    return false;
+            }
+        }
+        static bool CompareHighest(List<Card> a, List<Card> b)
+        {
+            Card maxA = a
+                .OrderBy(c => Big2RankValue(c.Rank))
+                .ThenBy(c => Big2SuitValue(c.Suit))
+                .Last();
+
+            Card maxB = b
+                .OrderBy(c => Big2RankValue(c.Rank))
+                .ThenBy(c => Big2SuitValue(c.Suit))
+                .Last();
+
+            int r = Big2RankValue(maxA.Rank).CompareTo(Big2RankValue(maxB.Rank));
+            if (r != 0) return r > 0;
+
+            return Big2SuitValue(maxA.Suit) > Big2SuitValue(maxB.Suit);
+        }
+        static int GetTripleRank(List<Card> cards)
+        {
+            return cards
+                .GroupBy(c => c.Rank)
+                .First(g => g.Count() == 3)
+                .Key;
+        }
+        static int GetFourRank(List<Card> cards)
+        {
+            return cards
+                .GroupBy(c => c.Rank)
+                .First(g => g.Count() == 4)
+                .Key;
+        }
     }
 }

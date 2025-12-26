@@ -66,3 +66,4 @@ c:\Users\a0919\OneDrive\桌面\Big2Game-main\Poker_Card\obj\Debug\net9.0\refint\
 c:\Users\a0919\OneDrive\桌面\Big2Game-main\Poker_Card\obj\Debug\net9.0\Poker_Card.pdb
 c:\Users\a0919\OneDrive\桌面\Big2Game-main\Poker_Card\obj\Debug\net9.0\Poker_Card.genruntimeconfig.cache
 c:\Users\a0919\OneDrive\桌面\Big2Game-main\Poker_Card\obj\Debug\net9.0\ref\Poker_Card.dll
+c:\Users\a0919\OneDrive\桌面\Big2Game-main\Poker_Card\obj\Debug\net9.0\Poker_Card.sourcelink.json

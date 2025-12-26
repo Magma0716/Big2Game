@@ -41,3 +41,4 @@ c:\Users\a0919\OneDrive\桌面\Big2Game-main\Poker_Card_Server\obj\Debug\net9.0\
 c:\Users\a0919\OneDrive\桌面\Big2Game-main\Poker_Card_Server\obj\Debug\net9.0\Poker_Card_Server.pdb
 c:\Users\a0919\OneDrive\桌面\Big2Game-main\Poker_Card_Server\obj\Debug\net9.0\Poker_Card_Server.genruntimeconfig.cache
 c:\Users\a0919\OneDrive\桌面\Big2Game-main\Poker_Card_Server\obj\Debug\net9.0\ref\Poker_Card_Server.dll
+c:\Users\a0919\OneDrive\桌面\Big2Game-main\Poker_Card_Server\obj\Debug\net9.0\Poker_Card_Server.sourcelink.json
